@@ -51,14 +51,16 @@ VIA_POINTS = [
     # Start -> gate 1: nothing needed (we come in at an angle that passes pole 1).
     [],
     # Gate 1 -> gate 2: gate 2 is right next to gate 1 and pole 2 is in between,
-    # so we go around pole 2 on its south/east side and approach gate 2 from the south-east.
-    [("pole", 1, 0.0, -0.38, 0.85), ("pole", 1, 0.38, -0.12, 1.1)],
+    # so right after gate 1 we turn south (passing pole 2 on its south-west side), go around it
+    # and approach gate 2 from the south-east.
+    [("pole", 1, -0.15, -0.42, 0.8), ("pole", 1, 0.38, -0.12, 1.1)],
     # Gate 2 -> gate 3: stay high (above gate 1's frame), then descend towards gate 3.
     # (0.25 m in front of gate 1 and 0.32 m to its side, at 1.2 m height.)
     [("gate_local", 0, -0.25, -0.32, 1.2)],
-    # Gate 3 -> gate 4: pole 3 is only 0.5 m behind gate 3, so we turn left right behind the
-    # gate (but clear of its frame), pass pole 4 on its south side, then come in at an angle.
-    [("gate_local", 2, 0.3, 0.55, 0.7), ("pole", 3, -0.1, -0.35, 1.1)],
+    # Gate 3 -> gate 4: pole 3 is only 0.5 m behind gate 3, so right after the gate we turn
+    # south, passing pole 3 on its south-east side; then we pass pole 4 on its south side and
+    # come into gate 4 at an angle.
+    [("pole", 2, 0.2, -0.45, 0.7), ("pole", 3, -0.1, -0.35, 1.1)],
     # Gate 4 -> gate 2 (second time): pass pole 2 on its east side again.
     [("pole", 1, 0.38, -0.15, 1.2)],
 ]
@@ -67,7 +69,12 @@ VIA_POINTS = [
 # Angle [deg] between our straight flight line through each gate and the gate's centre line, one
 # per gate in race order. Positive = we come in from the gate's local -y side (its "right").
 # Used where a pole stands on the centre line, so the straight approach can pass beside it.
-APPROACH_ANGLES = [30.0, 20.0, 0.0, 35.0, 0.0]
+APPROACH_ANGLES = [20.0, 20.0, 0.0, 35.0, 0.0]
+
+
+# Per-gate multiplier for GATE_SPEED (race order). < 1 = slower through that gate, e.g. where a
+# sharp turn or a pole comes right after it.
+GATE_SPEED_FACTORS = [1.0, 0.75, 0.75, 0.75, 1.0]
 
 
 def _angle(u: np.ndarray, v: np.ndarray) -> float:
@@ -80,7 +87,7 @@ class GateSplineController(Controller):
     """Follows a smooth racing line through the measured gates and re-plans when they move."""
 
     # ---- Tuning knobs -------------------------------------------------------
-    SPEED = 1.3  # Flight speed between gates [m/s]. Lower = safer, higher = faster.
+    SPEED = 1.5  # Flight speed between gates [m/s]. Lower = safer, higher = faster.
     GATE_SPEED = 0.8  # Speed from the line-up point, through the gate, to the exit point [m/s].
     APPROACH_DIST = 0.45  # Line-up point: this far in front of the gate centre [m].
     EXIT_DIST = 0.3  # Exit point: this far behind the gate centre [m].
@@ -195,13 +202,14 @@ class GateSplineController(Controller):
             # A second point on the same straight line keeps the curve straight into the gate
             # (a cubic spline otherwise "bulges" after a turn at the line-up point).
             mid = centre + 0.4 * (pre - centre)
+            gate_speed = self.GATE_SPEED * GATE_SPEED_FACTORS[k]
             if np.dot(start_pos - centre, normal) < np.dot(mid - centre, normal) - 0.05:
                 waypoints.append(mid)
-                speeds.append(self.GATE_SPEED)
+                speeds.append(gate_speed)
             waypoints.append(centre)
-            speeds.append(self.GATE_SPEED)  # Slow and straight through the gate ...
+            speeds.append(gate_speed)  # Slow and straight through the gate ...
             waypoints.append(post)
-            speeds.append(self.GATE_SPEED)  # ... and a bit beyond.
+            speeds.append(gate_speed)  # ... and a bit beyond.
         return waypoints, speeds
 
     # ---- Path ------------------------------------------------------------------
