@@ -23,7 +23,7 @@ class _TimingPath(ta.interpolator.AbstractGeometricPath):
     def __init__(self, curve: BPoly):
         self.curve = curve
         angles = np.arange(8) * np.pi / 4
-        tangent = np.tan(np.deg2rad(40)) * np.cos(np.pi / 8)
+        tangent = np.tan(np.deg2rad(45.190478572755005)) * np.cos(np.pi / 8)
         self.projection = np.c_[np.cos(angles), np.sin(angles), -np.full(8, tangent)]
 
     def __call__(self, coordinates: float | np.ndarray, order: int = 0) -> np.ndarray:
@@ -49,11 +49,11 @@ class RetimedController(Controller):
     """
 
     segment_scales = np.ones(13)
-    acceleration_limit = 6.0
-    speed_limit = 2.8
-    clock_limit = 1.8
-    governor_gain = 3.0
-    error_gain = 2.0
+    acceleration_limit = 6.5014035883674275
+    speed_limit = 3.220762476963001
+    clock_limit = 2.576672575245518
+    governor_gain = 4.322454373989269
+    error_gain = 0.5223136598081135
 
     def __init__(self, obs: dict[str, NDArray[np.floating]], info: dict, config: dict):
         """Create the Level 2 route using only configuration and permitted observations."""
@@ -250,17 +250,16 @@ class RetimedController(Controller):
         grid = np.unique(np.r_[np.linspace(*path.path_interval, 180), self.curve.x])
 
         def velocity_limits(s: float) -> np.ndarray:
-            cap = min(self.clock_limit, 1.0 + max(0.0, s - 1.6) * 0.8)
-            bend = max(
-                np.exp(-(((s - 3.35) / 0.45) ** 4)),
-                np.exp(-(((s - 5.65) / 0.65) ** 4)),
-                np.exp(-(((s - 7.45) / 0.35) ** 4)),
+            cap = min(self.clock_limit, 1.0 + max(0.0, s - 0.6022783540711624) * 1.5955034469282965)
+            cap = min(cap,
+                self.clock_limit - max(0.0, self.clock_limit - 1.0) * np.exp(-(((s - 3.3727512571601324) / 0.45) ** 4)),
+                self.clock_limit - max(0.0, self.clock_limit - 2.3456483667264827) * np.exp(-(((s - 5.444625406228474) / 0.65) ** 4)),
+                self.clock_limit - max(0.0, self.clock_limit - 1.2314689617565773) * np.exp(-(((s - 7.317766989395945) / 0.35) ** 4)),
             )
-            cap = min(cap, self.clock_limit - (self.clock_limit - 1.05) * bend)
             limits = np.r_[self.speed_limit, self.speed_limit, 1.8, cap, np.full(8, 1000.0)]
             return np.c_[-limits, limits]
 
-        tilt_bound = np.tan(np.deg2rad(40)) * np.cos(np.pi / 8) * 9.81
+        tilt_bound = np.tan(np.deg2rad(45.190478572755005)) * np.cos(np.pi / 8) * 9.81
         limits = np.array(
             [[-self.acceleration_limit, self.acceleration_limit]] * 2
             + [[-3.0, 4.0], [-1.2, 1.2]]
@@ -296,12 +295,12 @@ class RetimedController(Controller):
         if not bool(obs["gates_visited"][gate]):
             distance = np.linalg.norm(obs["gates_pos"][gate] - obs["pos"])
             if distance < 1.4:
-                target = min(target, 1.8 / max(np.linalg.norm(first), 0.1))
+                target = min(target, 1.838140604797607 / max(np.linalg.norm(first), 0.1))
         error = float(np.linalg.norm(pos - obs["pos"]))
         target /= 1.0 + self.error_gain * max(0.0, error - 0.04)
         requested = np.clip(self.governor_gain * (target - self.rate), -1.2, 1.2)
         # Bound clock jerk to avoid sudden changes in acceleration feedforward.
-        chosen = np.clip(requested, self.rate_acc - 6 * self.dt, self.rate_acc + 6 * self.dt)
+        chosen = np.clip(requested, self.rate_acc - 6.347144140814202 * self.dt, self.rate_acc + 6.347144140814202 * self.dt)
         chosen = np.clip(
             chosen, (0.25 - self.rate) / self.dt, (self.clock_limit - self.rate) / self.dt
         )
@@ -350,12 +349,12 @@ class RetimedController(Controller):
         original_force = force.copy()
         force[2] = np.clip(force[2], 3.0, 14.0)
         lateral = np.linalg.norm(force[:2])
-        allowed = force[2] * np.tan(np.deg2rad(45))
+        allowed = force[2] * np.tan(np.deg2rad(50.921903802535454))
         if lateral > allowed:
             force[:2] *= allowed / lateral
         norm = np.linalg.norm(force)
-        if norm > 17.0:
-            force *= 17.0 / norm
+        if norm > 17.36835732528887:
+            force *= 17.36835732528887 / norm
         self.constraint_fallbacks += int(np.linalg.norm(force - original_force) > 1e-6)
         acc = force - [0, 0, 9.81]
         magnitude = max(float(np.linalg.norm(force)), 1e-6)
