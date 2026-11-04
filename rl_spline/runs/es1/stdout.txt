@@ -1,0 +1,40 @@
+baseline (zero policy): val success 78%, time 7.490s, score 7.11
+gen 1: sigma 0.291, fit best 5.52 mean 2.40, pop success 56%, 63.1s
+gen 2: sigma 0.284, fit best 4.15 mean 1.30, pop success 47%, 56.9s
+gen 3: sigma 0.277, fit best 5.07 mean 0.95, pop success 57%, 65.6s
+gen 4: sigma 0.271, fit best 6.02 mean 2.79, pop success 57%, 63.6s
+  val: score 7.15, success 80%, time 7.520s  (new best)
+gen 5: sigma 0.266, fit best 6.61 mean 2.58, pop success 68%, 78.6s
+gen 6: sigma 0.262, fit best 6.94 mean 3.03, pop success 69%, 75.4s
+gen 7: sigma 0.258, fit best 4.50 mean 1.26, pop success 55%, 75.3s
+gen 8: sigma 0.255, fit best 4.02 mean 1.24, pop success 68%, 78.2s
+gen 9: sigma 0.252, fit best 4.50 mean 1.12, pop success 53%, 67.0s
+  val: score 6.04, success 76%, time 7.594s
+gen 10: sigma 0.249, fit best 5.57 mean 1.57, pop success 69%, 92.6s
+gen 11: sigma 0.247, fit best 7.72 mean 1.90, pop success 50%, 66.6s
+gen 12: sigma 0.245, fit best 5.22 mean 2.13, pop success 56%, 70.2s
+gen 13: sigma 0.244, fit best 5.94 mean 2.63, pop success 66%, 77.9s
+gen 14: sigma 0.242, fit best 8.15 mean 3.41, pop success 67%, 83.2s
+  val: score 6.44, success 73%, time 7.475s
+gen 15: sigma 0.241, fit best 6.43 mean 4.06, pop success 69%, 98.4s
+gen 16: sigma 0.239, fit best 4.53 mean 0.55, pop success 43%, 71.5s
+gen 17: sigma 0.238, fit best 6.06 mean 1.86, pop success 65%, 79.6s
+gen 18: sigma 0.237, fit best 4.77 mean 1.42, pop success 44%, 76.8s
+gen 19: sigma 0.236, fit best 4.88 mean 1.43, pop success 52%, 75.7s
+  val: score 5.29, success 75%, time 7.656s
+gen 20: sigma 0.235, fit best 5.76 mean 3.19, pop success 66%, 98.8s
+gen 21: sigma 0.234, fit best 5.10 mean 1.16, pop success 53%, 72.0s
+gen 22: sigma 0.234, fit best 4.00 mean 0.47, pop success 47%, 67.3s
+gen 23: sigma 0.233, fit best 6.70 mean 2.19, pop success 74%, 87.5s
+gen 24: sigma 0.232, fit best 6.38 mean 3.35, pop success 71%, 83.1s
+  val: score 6.50, success 84%, time 7.664s
+gen 25: sigma 0.231, fit best 4.07 mean 1.87, pop success 48%, 91.7s
+gen 26: sigma 0.230, fit best 6.68 mean 3.51, pop success 65%, 89.5s
+gen 27: sigma 0.229, fit best 7.06 mean 2.45, pop success 55%, 76.1s
+gen 28: sigma 0.228, fit best 4.57 mean 1.43, pop success 55%, 72.6s
+gen 29: sigma 0.226, fit best 5.44 mean 2.39, pop success 53%, 68.7s
+  val: score 6.67, success 82%, time 7.613s
+gen 30: sigma 0.224, fit best 5.80 mean 2.93, pop success 61%, 86.8s
+gen 31: sigma 0.222, fit best 5.23 mean 3.68, pop success 66%, 76.6s
+gen 32: sigma 0.221, fit best 5.17 mean 2.45, pop success 64%, 79.5s
+gen 33: sigma 0.220, fit best 6.58 mean 1.49, pop success 55%, 75.8s
