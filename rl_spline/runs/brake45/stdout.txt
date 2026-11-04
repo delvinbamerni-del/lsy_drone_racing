@@ -1,0 +1,31 @@
+start: val success 70% time 6.179s score 15.07  {'approach_window': [0.592, 0.632, 0.459, 0.536, 0.512], 'approach_rate': [0.713, 0.768, 0.598, 0.571, 0.72]}
+gen 1: fit best 14.03 mean 12.43, sigma 0.39, 34s
+gen 2: fit best 13.72 mean 10.61, sigma 0.40, 33s
+gen 3: fit best 12.86 mean 10.71, sigma 0.36, 35s
+gen 4: fit best 14.76 mean 12.37, sigma 0.34, 39s
+  val: success 70% time 6.264s score 14.49  {'approach_window': [0.586, 0.651, 0.477, 0.506, 0.51], 'approach_rate': [0.71, 0.749, 0.576, 0.551, 0.624]}
+gen 5: fit best 14.11 mean 12.22, sigma 0.31, 55s
+gen 6: fit best 15.36 mean 13.30, sigma 0.28, 48s
+gen 7: fit best 14.31 mean 12.85, sigma 0.26, 46s
+gen 8: fit best 13.81 mean 12.05, sigma 0.24, 44s
+gen 9: fit best 17.49 mean 14.52, sigma 0.23, 40s
+  val: success 70% time 6.281s score 14.41  {'approach_window': [0.612, 0.67, 0.508, 0.547, 0.537], 'approach_rate': [0.702, 0.776, 0.598, 0.559, 0.663]}
+gen 10: fit best 14.03 mean 12.30, sigma 0.21, 54s
+gen 11: fit best 13.69 mean 11.89, sigma 0.21, 43s
+gen 12: fit best 16.74 mean 14.28, sigma 0.21, 44s
+gen 13: fit best 13.47 mean 12.89, sigma 0.22, 41s
+gen 14: fit best 13.67 mean 12.14, sigma 0.22, 42s
+  val: success 72% time 6.213s score 15.39  (new best)  {'approach_window': [0.549, 0.565, 0.442, 0.512, 0.54], 'approach_rate': [0.685, 0.78, 0.572, 0.566, 0.69]}
+gen 15: fit best 16.45 mean 15.17, sigma 0.23, 54s
+gen 16: fit best 15.67 mean 13.79, sigma 0.23, 42s
+gen 17: fit best 17.99 mean 16.96, sigma 0.24, 48s
+gen 18: fit best 14.33 mean 13.05, sigma 0.25, 48s
+gen 19: fit best 17.03 mean 14.96, sigma 0.26, 46s
+  val: success 74% time 6.305s score 15.26  {'approach_window': [0.547, 0.568, 0.453, 0.495, 0.432], 'approach_rate': [0.665, 0.806, 0.576, 0.527, 0.702]}
+gen 20: fit best 14.63 mean 12.54, sigma 0.25, 54s
+gen 21: fit best 16.19 mean 14.79, sigma 0.24, 44s
+gen 22: fit best 16.45 mean 14.73, sigma 0.22, 44s
+gen 23: fit best 16.20 mean 14.58, sigma 0.21, 43s
+gen 24: fit best 15.31 mean 12.89, sigma 0.19, 48s
+  val: success 75% time 6.356s score 15.13  {'approach_window': [0.574, 0.555, 0.456, 0.52, 0.502], 'approach_rate': [0.644, 0.778, 0.562, 0.547, 0.705]}
+gen 25: fit best 16.07 mean 14.35, sigma 0.17, 65s
