@@ -310,3 +310,44 @@ configuration went to a 4 × 20 official check.
 7.431 s / 65%, failed qualification (45%), 7.362 s / 60%, 7.507 s / 75%. That is 61% overall,
 so it is not a candidate: it is below 70% overall, one run is under 50%, and its mean is slower
 than 7.375 s. Not committed as a controller change.
+
+### Session 2b (08:04–08:11): settings between the default and the reliable configs
+
+**Screens (harness, 60 runs each; seeds 1/2/3 unless noted):**
+
+| Change from default | Lap (s) | Success |
+|---|---|---|
+| `force_limit` 15.5 | 7.405 | 58.3% |
+| `force_limit` 16.5 | 7.381 | 65.0% |
+| `error_gain` 1.0 | 7.428 | 61.7% |
+| `error_gain` 1.25 | 7.499 | 70.0% |
+| `error_gain` 1.5 | 7.531 | 71.7% |
+| `force_limit` 15 + `error_gain` 1.0 | 7.432 | 65.0% |
+| `force_limit` 16 + `error_gain` 1.0 | 7.443 | 68.3% |
+| `plan_tilt_deg` 41 | 7.418 | 55.0% |
+| `plan_tilt_deg` 42 | 7.376 | 66.7% |
+| `plan_tilt_deg` 43.5 | 7.412 | 56.7% |
+| `error_gain` 1.0 + `plan_tilt_deg` 43 | 7.436 | 55.0% |
+| `force_limit` 15.5 + `plan_tilt_deg` 43 | 7.392 | 63.3% |
+| `plan_tilt_deg` 42 + `force_limit` 16.5 | 7.368 | 56.7% |
+| `plan_tilt_deg` 42 + `force_limit` 16 | 7.374 | 61.7% |
+| `plan_tilt_deg` 42 + `error_gain` 0.8 | 7.413 | 60.0% |
+| `force_limit` 15.5 + `error_gain` 1.25 + `plan_tilt_deg` 44 | 7.463 | 71.7% |
+| *Recheck on seeds 4/5/6:* default | 7.360 | 65.0% |
+| *Recheck on seeds 4/5/6:* `plan_tilt_deg` 42 | 7.400 | 55.0% |
+| *Recheck on seeds 4/5/6:* `force_limit` 16.5 | 7.395 | 61.7% |
+| *Recheck on seeds 4/5/6:* `force_limit` 15.5 + `error_gain` 1.25 + `plan_tilt_deg` 44 | 7.468 | 60.0% |
+
+On the new seeds the default did as well as or better than the in-between configurations, so
+most of the spread in the screens is harness noise (about ±6 points over 60 runs).
+
+**Official `evaluate.py`, 4 × 20 runs:**
+
+| Config | Per-run results | Overall | Candidate? |
+|---|---|---|---|
+| `force_limit` 16.5 | 7.345 s / 60%, 7.382 s / 65%, 7.323 s / 60%, 7.482 s / 55% | ≈7.38 s, 60% | No: success < 70% |
+| `force_limit` 15.5 + `error_gain` 1.25 + `plan_tilt_deg` 44 | 7.441 s / 80%, 7.560 s / 80%, 7.530 s / 70%, 7.509 s / 75% | ≈7.51 s, 76% | No: slower than 7.375 s |
+
+The combination is the most reliable configuration found (76% overall, worst run 70%), but it
+is about 0.14 s slower than the team's current entry. **No submission candidate.** The
+controller and `level2.toml` were restored to their committed state.
