@@ -214,6 +214,14 @@ class MinTimeController(Controller):
     gov_gain = 3.0  # rate change per metre of along-track error
     rate_min, rate_max = 0.4, 1.1
     rate_slew = 4.0  # max rate change per second
+    gov_bias = 0.05  # m; the steady along-track lag that is accepted without slowing down
+    # gate approach: within `approach_window` s (plan time) of a crossing, cap the clock rate, so a
+    # gate revealed late leaves more time for the correction
+    approach_window = 0.55
+    approach_rate = 0.75
+    # lag predictor: feedback acts on the state predicted `predict` s ahead (current velocity and
+    # current thrust direction), compared with the reference at that time
+    predict = 0.0
 
     def __init__(self, obs: dict[str, NDArray[np.floating]], info: dict, config: dict):
         """Rebuild the reference from the embedded plan and set up gate corrections."""
@@ -226,6 +234,7 @@ class MinTimeController(Controller):
         self.dt = 1 / config.env.freq
         self.t = 0.0  # reference (plan) clock
         self.rate = 1.0
+        self._last_thrust = 0.0
         # reference: exact integration of the piecewise-constant plan accelerations
         n = len(PLAN_A) // len(PLAN_T)
         self.step_dt = np.repeat(PLAN_T / n, n)
@@ -242,6 +251,7 @@ class MinTimeController(Controller):
         self.nominal = np.array([g["pos"] for g in config.env.track.gates], dtype=float)
         self.known = np.zeros(len(self.nominal), dtype=bool)
         self.shift = np.zeros_like(self.nominal)
+        self.reveal_t = np.full(len(self.nominal), -1.0)
         self.integral = np.zeros(3)
         # offset path: starts at the measured start offset, fades to the first gate's shift
         self.segment = 0
@@ -291,6 +301,7 @@ class MinTimeController(Controller):
         for g in np.flatnonzero(visited & ~self.known):
             self.known[g] = True
             self.shift[g] = np.asarray(obs["gates_pos"][g]) - self.nominal[g]
+            self.reveal_t[g] = t
             replan = True
         segment = int(min(np.searchsorted(self.gate_t, t, side="right"), len(self.gate_t)))
         if segment != self.segment:
@@ -299,20 +310,31 @@ class MinTimeController(Controller):
             o, v, _ = self._offset(t)
             self._plan_offset(o, v, t)
 
-        p_ref, v_ref, _ = self._ref(t)
-        _, _, a_ff = self._ref(t + self.ff_lead * self.rate)
-        o, ov, _ = self._offset(t)
-        _, _, oa_lead = self._offset(t + self.ff_lead * self.rate)
-        e = p_ref + o - np.asarray(obs["pos"])
+        pos, vel = np.asarray(obs["pos"], dtype=float), np.asarray(obs["vel"], dtype=float)
+        L = self.predict
+        if L > 0:  # where the drone will be once the current attitude has acted for L seconds
+            z_now = Rotation.from_quat(obs["quat"]).as_matrix()[:, 2]
+            a_now = z_now * self._last_thrust / self.mass + GRAVITY
+            pos, vel = pos + vel * L + 0.5 * a_now * L**2, vel + a_now * L
+        tL = t + L * self.rate
+        p_ref, v_ref, _ = self._ref(tL)
+        _, _, a_ff = self._ref(tL + self.ff_lead * self.rate)
+        o, ov, _ = self._offset(tL)
+        _, _, oa_lead = self._offset(tL + self.ff_lead * self.rate)
+        e = p_ref + o - pos
         # governor: compare along-track position, adapt the clock rate
         tangent = v_ref + ov
         speed = np.linalg.norm(tangent)
         along = float(-e @ tangent / speed) if speed > 0.3 else 0.0  # > 0: drone is ahead
-        target = np.clip(1.0 + self.gov_gain * along, self.rate_min, self.rate_max)
+        target = np.clip(1.0 + self.gov_gain * (along + self.gov_bias), self.rate_min, self.rate_max)
+        if self.segment < len(self.gate_t) and self.gate_t[self.segment] - t < self.approach_window:
+            g = self.sequence[self.segment]  # skip gates whose position was known well before
+            if not self.known[g] or self.reveal_t[g] > self.gate_t[self.segment] - self.approach_window - 0.3:
+                target = min(target, self.approach_rate)
         step = self.rate_slew * self.dt
         self.rate = float(np.clip(target, self.rate - step, self.rate + step))
         r = self.rate
-        ev = (v_ref + ov) * r - np.asarray(obs["vel"])
+        ev = (v_ref + ov) * r - vel
         self.integral = np.clip(self.integral + e * self.dt, -0.3, 0.3)
         kinematic = (a_ff + GRAVITY + oa_lead) * r**2  # plan acceleration at the current rate
         acc = kinematic - GRAVITY + self.kp * e + self.kd * ev + self.ki * self.integral
@@ -329,6 +351,7 @@ class MinTimeController(Controller):
 
         z_body = Rotation.from_quat(obs["quat"]).as_matrix()[:, 2]
         thrust = self.mass * max(float(acc @ z_body), 0.0)
+        self._last_thrust = thrust
         z_des = acc / np.linalg.norm(acc)
         y_des = np.cross(z_des, [1.0, 0.0, 0.0])
         y_des /= np.linalg.norm(y_des)
