@@ -241,3 +241,67 @@ and line 48 stays `attitude`.
   the leaderboard) could serve as a more reliable base. I did not install `toppra` or evaluate it.
 
 **Packages installed:** none. acados was already part of the default pixi environment.
+
+---
+
+## Session 2 (2026-11-04): tuning the partner's `refined_controller.py`
+
+**Package install:** `toppra==0.6.3`, the dependency of `refined_controller.py`. Added by
+taking `pyproject.toml` and `pixi.lock` unchanged from `origin/main` (the partner's commit
+`ad6b524`), then running `pixi install`.
+
+**Files:**
+- `refined_controller.py`: the partner's file, unchanged (copied from `origin/main`).
+- `refined_fast_controller.py`: a copy with the magic numbers moved into class attributes
+  and a `gate3_exit` knob. With the default values it gives identical results to the original
+  on all 60 seeded runs.
+- Both files need `control_mode = "state"` on line 48 of `level2.toml`.
+
+**Baseline: `refined_controller.py` (`126f198`), official `evaluate.py`, 4 × 20 runs:**
+7.352 s / 65%, 7.340 s / 55%, 7.310 s / 50%, 7.340 s / 55% (≈56%). The leaderboard's
+85% did not reproduce locally.
+
+The partner's earlier version (`ad6b524`) gets 8.34 s / 82% on the harness (60 runs).
+
+**Failure diagnosis (60 runs of the baseline, 26 failures):**
+- **About 10 were losses of control.** The drone flipped and fell to the floor at about 4 m/s.
+  `force_limit` 17.4 m/s² is about 95% of maximum thrust (18.4), so a fast reversal of the
+  acceleration command (for example after gate 1) saturates the motors and the attitude diverges.
+- **The rest were clips.**
+  - Gate 3's frame right after crossing it: the exit knot climbs 15 cm while the drone is
+    still inside the gate.
+  - The pole at [0, 0.75] after gate 2.
+  - Gate 4's side and its pole.
+
+**Screens (harness, seeds 1/2/3 × 20 = 60 runs each; one change from the baseline unless noted):**
+
+| Change | Lap (s) | Success |
+|---|---|---|
+| baseline | 7.352 | 56.7% |
+| `error_gain` 2.0 | 7.561 | 73.3% |
+| `governor_gain` 3.0 | 7.456 | 65.0% |
+| `cmd_tilt_deg` 45, `force_limit` 17.0 | 7.421 | 61.7% |
+| `plan_tilt_deg` 40 | 7.462 | 71.7% |
+| `force_limit` 16 | 7.375 | 53.3% |
+| `force_limit` 15 | 7.422 | 51.7% |
+| `force_limit` 14 | 7.408 | 73.3% |
+| `cmd_tilt_deg` 40 | 7.430 | 61.7% |
+| `gate3_exit` (0.23, −0.08, 0.05) | 7.486 | 31.7% |
+| `gate3_exit` (0.30, −0.08, 0.10) | 7.473 | 48.3% |
+| `error_gain` 2.0 + `force_limit` 14 | 7.573 | 76.7% |
+| `error_gain` 2.0 + `plan_tilt_deg` 40 | 7.629 | 81.7% |
+| `gate3_exit` (0.23, −0.08, 0.20) | 7.377 | 63.3% |
+| `gate3_exit` (0.18, −0.08, 0.15) | 7.391 | 50.0% |
+| `gate3_exit` (0.23, −0.15, 0.15) | 7.320 | 58.3% |
+| `gate3_exit` (0.23, 0.00, 0.15) | 7.484 | 61.7% |
+| `gate3_speed` 0.55 | 7.421 | 65.0% |
+| `gate3_speed` 0.75 | 7.400 | 58.3% |
+| `gate3_speed` 0.55 + `gate3_exit` (0.23, −0.15, 0.15) | 7.426 | 53.3% |
+| `force_limit` 14 + `gate3_exit` (0.23, −0.15, 0.15) | 7.326 | 61.7% |
+
+**Result: no submission candidate.** Nothing reached < 7.375 s with ≥ 70% success, so no
+configuration went to a 4 × 20 official check.
+- Every change that raised success to 70% or more also raised the lap time to 7.41–7.63 s.
+- The partner's tuned exit knot after gate 3 is already near a local optimum: every
+  variant was equal or worse.
+- Tuning stopped at 07:46, as required by the 08:00 cutoff.

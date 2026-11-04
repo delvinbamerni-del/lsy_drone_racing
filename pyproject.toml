@@ -89,6 +89,9 @@ make = "==4.4.1"
 [tool.pixi.pypi-dependencies]
 lsy_drone_racing = { path = ".", editable = true }
 
+[tool.pixi.feature.race.pypi-dependencies]
+toppra = "==0.6.3"
+
 # Platform-specific acados setup.
 [tool.pixi.feature.sim.target.unix.activation]
 scripts = ["tools/setup_acados.sh"]
@@ -104,7 +107,7 @@ evaluate = { cmd = "python scripts/evaluate.py", description = "Evaluate the con
 
 ### environments
 [tool.pixi.environments]
-default = { features = ["sim"], solve-group = "default" }
+default = { features = ["sim", "race"], solve-group = "default" }
 deploy = { features = ["sim", "gpu", "kilted", "deploy"] }
 gpu = { features = ["sim", "gpu"], solve-group = "default" }
 tests = { features = ["sim", "rl", "tests"], solve-group = "default" }
