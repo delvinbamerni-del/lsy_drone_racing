@@ -64,7 +64,6 @@ passages are 0.6–0.8 m/s.
 | 1 | `SPEED` 1.5 → 1.8 | 10.72 | 40% | reverted |
 | 2 | `SPEED` 1.5 → 2.1 | 10.06 | 5% | reverted |
 | 3 | `SPEED` 1.5 → 2.4 / 2.8 | – | 0% | reverted |
-
 | 4 | `GATE_SPEED` 0.8 → 1.2 | 10.45 | 60% | reverted (success drop) |
 | 5 | `ACC_MAX` 100 → 15 | 12.04 | 80% | reverted (slower) |
 | 6 | `control_mode` state | 11.97 | 50% | reverted |
@@ -122,3 +121,64 @@ From here on, screening uses fixed seeds 1 and 2 (20 runs each, 40 runs combined
 Main failure points so far: the first gate is revealed only about 0.3 s before the drone reaches
 it (so the re-plan offset was still in the reference at the gate), and tracking errors of
 0.1 m or more against a lateral tolerance of only about ±0.12 m.
+
+From here on, screening uses fixed seeds 1, 2 and 3 (60 runs). Where noted, changes were also
+checked on seeds 4–6. At 60 runs a success rate is only accurate to about ±6 points.
+
+| # | Change (vs. previous kept state) | Time [s] | Success | Kept? |
+|---|---|---|---|---|
+| 30 | baseline of #29 on 60 runs | 7.12 | 60% | – |
+| 31 | first-gate speed limit 1.5 / 1.2 (`V_GATES`) | 7.25–7.37 | 43–55% | reverted |
+| 32 | `APPROACH_DIST` 0.4 | 7.33 | 47% | reverted |
+| 33 | 4th-gate approach angle 35° → 25° / 15°, final gate 15° | 7.14–7.16 | 43–58% | reverted |
+| 34 | re-plan continues the speed profile from the current speed (needed for #35) | 7.17 | 50% | kept (structural) |
+| 35 | speed cap 1.5 / 1.0 near gates not yet seen (`V_UNSEEN`) | 7.37 / 7.78 | 67% / 45% | reverted (slower) |
+| 36 | **3rd-gate approach angle 0° → 20°** | 7.08 | 61.7% | **kept** |
+| 37 | MPC: heavier input weights / heavier rate weights | 7.09–7.96 | 20–42% | reverted |
+| 38 | per-gate unseen cap for the first gate only | 7.21–7.37 | 53–60% | reverted |
+| 39 | `V_MAX` 3.0, `A_ACC` 7, `A_DEC` 7 | 6.98–7.25 | 38–43% | reverted |
+| 40 | `A_LAT` 8 (seeds 1–3: 56.7% @ 6.69; seeds 4–6: 45% @ 6.80) | 6.69–6.80 | ~51% | reverted (too risky) |
+| 41 | instant re-plan jump / faster fade / fade finished 0.5 m before the gate | 7.0–7.1 | 45–57% | reverted |
+| 42 | tilt limit near the ground during takeoff | 7.47–7.52 | 35–43% | reverted |
+| 43 | aim offset for not-yet-seen first gate (±0.04 / 0.05 / 0.08 m) | 7.07–7.30 | 25–60% | reverted |
+| 44 | MPC yaw weights higher | 7.17–7.29 | 25–42% | reverted |
+| 45 | MPC input reference = commands that hold the planned tilt/thrust | 7.00 | 51.7% | reverted |
+| 46 | PID tracker with all planner improvements (120 runs) | 6.81 | 45.8% | reverted (<50%) |
+| 47 | fixed first-gate approach cap 1.0 / 1.3 / 1.6 m/s (`V_APPROACH`) | 7.36–7.63 | 55–62% | reverted (slower, same success) |
+| 48 | 3rd-gate exit: pole clearance 0.22, via points further away (2 variants) | 7.41–7.62 | 60–65% | reverted (noise level, slower) |
+| 49 | yaw alignment with gate frames (box collider) + yaw bound ±1 rad, yaw weights 1/10/30 | 7.13–7.19 | 43–50% | reverted |
+| 50 | MPC horizon 15 / 40 steps | 7.26 / 7.40 | 28% / 33% | reverted |
+
+Findings from the diagnostics:
+- **First gate:** whether it crashes depends on the gate's random sideways shift. With less
+  than 0.07 m of shift, 8% crash; with more, 33–59% crash. The gate is revealed only about 0.35 s
+  before the drone reaches it at 2 m/s, and correcting 0.15 m sideways in that time needs about
+  10 m/s² of lateral acceleration.
+- **The 3rd → 4th gate leg:** most crashes happen right *after* the 3rd gate. The drone turns
+  south while still 7–10 cm behind the gate plane, and its collision box (±7 cm, ±9.9 cm across
+  the diagonal) touches the frame's side bar.
+- **Collision geometry:** the race environment uses the drone's **box** collider (14 × 14 × 4 cm).
+  Gates 1 and 2 are at 45° to the drone's fixed heading of 0°, so the margin there is only
+  ±0.10 m. Aligning the drone's heading with each gate should add 3 cm of margin, but in practice
+  it didn't help (#49).
+| 51 | first-gate cap 1.3 / 1.5 + `A_LAT` 8 (bundles, 120 runs) | 6.94–7.11 | 50–52.5% | reverted |
+| 52 | 3rd-gate exit fixes on the bundle (slow passage, 2 via variants) | 6.99–7.31 | 47–53% | reverted |
+| 53 | MPC position weight ×3 / ×8 near gate centres | 7.00–7.12 | 38–42% | reverted |
+| 54 | state mode with the current planner (3 variants) | 7.7 | 0–18% | reverted |
+| 55 | MPC horizon 15 / 40 (see #50) | – | – | – |
+
+**200-run comparison (seeds 1–10) to choose the candidate:**
+
+| Candidate | Time [s] | Success |
+|---|---|---|
+| current (#36: 3rd-gate angle 20°, profile continuation) | **7.105** | **54.5%** |
+| checkpoint `ffe9d94` geometry (3rd-gate angle 0°) | 7.148 | 52.5% |
+| current + first-gate cap 1.3 m/s | 7.485 | 57.0% |
+| current + `A_LAT` 7 | 6.894 | 40.5% |
+
+Cleanup: the rejected options (takeoff tilt limit, aim bias, steady-state MPC references,
+gate weight boost, yaw alignment, state-mode output) were removed from the controller. The
+deterministic 60-run screen reproduces exactly (61.7%, 7.078 s).
+
+**Official `evaluate.py` (4 × 20 random runs):** 7.111 s / 55%, 7.136 s / 50%, 7.171 s / 55%,
+and one run at 35% that failed qualification. Mean ≈ 49% at ≈ 7.14 s.

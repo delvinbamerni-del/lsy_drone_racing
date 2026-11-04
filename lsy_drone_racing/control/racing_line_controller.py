@@ -57,7 +57,7 @@ VIA_POINTS = [
 ]
 
 # Angle [deg] between our straight line through each gate and the gate's centre line (race order).
-APPROACH_ANGLES = [20.0, 20.0, 0.0, 35.0, 0.0]
+APPROACH_ANGLES = [20.0, 20.0, 20.0, 35.0, 0.0]
 
 
 # ---- Model predictive tracking controller (MPC) ----------------------------------------------
@@ -68,12 +68,13 @@ MPC_N = 25  # Prediction steps (of one control period each).
 MPC_Q = [60.0, 60.0, 300.0, 1.0, 1.0, 1.0, 10.0, 10.0, 10.0, 1.0, 1.0, 1.0]  # pos, rpy, vel, drpy
 MPC_R = [5.0, 5.0, 5.0, 20.0]  # Weights on deviating from the planned roll, pitch, yaw, thrust.
 MPC_MAX_TILT = 0.9  # Max. roll/pitch [rad].
+MPC_MAX_YAW = 0.5  # Max. yaw command [rad].
 _MPC_CACHE: dict = {}
 
 
 def _mpc_solver(dt: float, drone: str):  # noqa: ANN202
     """Create (or reuse) the acados solver for the tracking MPC."""
-    key = (dt, drone, MPC_N, tuple(MPC_Q), tuple(MPC_R), MPC_MAX_TILT)
+    key = (dt, drone, MPC_N, tuple(MPC_Q), tuple(MPC_R), MPC_MAX_TILT, MPC_MAX_YAW)
     if key in _MPC_CACHE:
         return _MPC_CACHE[key]
     from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
@@ -104,8 +105,8 @@ def _mpc_solver(dt: float, drone: str):  # noqa: ANN202
     ocp.cost.Vx_e = np.eye(nx)
     ocp.cost.yref, ocp.cost.yref_e = np.zeros(nx + nu), np.zeros(nx)
     tilt = MPC_MAX_TILT
-    ocp.constraints.lbu = np.array([-tilt, -tilt, -0.5, 4 * params["thrust_min"]])
-    ocp.constraints.ubu = np.array([tilt, tilt, 0.5, 4 * params["thrust_max"]])
+    ocp.constraints.lbu = np.array([-tilt, -tilt, -MPC_MAX_YAW, 4 * params["thrust_min"]])
+    ocp.constraints.ubu = np.array([tilt, tilt, MPC_MAX_YAW, 4 * params["thrust_max"]])
     ocp.constraints.idxbu = np.arange(4)
     ocp.constraints.x0 = np.zeros(nx)
     opts = ocp.solver_options
@@ -145,7 +146,11 @@ class RacingLineController(Controller):
     A_ACC = 5.0  # Max. forward acceleration [m/s^2].
     A_DEC = 5.0  # Max. braking [m/s^2].
     V_MIN = 0.3  # The reference always moves at least this fast (needed to start from rest).
-    V_GATE = 10.0  # Max. speed while crossing a gate (between line-up and exit point) [m/s].
+    V_GATES = (10.0, 10.0, 10.0, 10.0, 10.0)  # Max. speed through each gate (race order) [m/s].
+    V_UNSEEN = 10.0  # Max. speed near a gate whose exact position is not known yet (or per gate)
+    UNSEEN_DIST = 0.8  # ... within this path distance before its centre [m].
+    V_APPROACH = (10.0, 10.0, 10.0, 10.0, 10.0)  # Max. speed in the last stretch before each gate
+    APPROACH_CAP_DIST = 0.8  # ... of this path length before its centre [m].
     # ---- Geometry ---------------------------------------------------------------------------
     APPROACH_DIST = 0.3  # Line-up point in front of the gate centre [m].
     EXIT_DIST = 0.3  # Exit point behind the gate centre [m].
@@ -163,7 +168,6 @@ class RacingLineController(Controller):
     FF_LEAD = 0.12  # Acceleration feedforward is taken this far ahead in time [s].
     ACC_FF = 1.0  # Fraction of the planned acceleration used as feedforward.
     MAX_TILT_DEG = 50.0
-    STATE_KI = np.array([0.5, 0.5, 2.0])  # Integral correction in state mode [1/s].
     OFFSET_TAU = 0.25  # Time constant for fading out the reference jump after a re-plan [s].
     OFFSET_GATE_MARGIN = 0.3  # ... and it is completely gone this far before the gate centre [m].
     CHANGE_TOL = 1e-3  # Change in a measured position that triggers a re-plan [m].
@@ -175,7 +179,8 @@ class RacingLineController(Controller):
         self._n_gates = len(obs["gate_sequence"])
         self._mass = load_params(config.sim.dynamics, config.sim.drone)["mass"]
         self._i_error = np.zeros(3)
-        self._mode = config.env.control_mode  # "attitude" (own PID) or "state" (onboard control)
+        if config.env.control_mode != "attitude":
+            raise ValueError("RacingLineController needs control_mode = 'attitude' (level2.toml).")
         self._finished = False
         self._start = obs["pos"].copy()
         self._s_ref = 0.0
@@ -184,7 +189,8 @@ class RacingLineController(Controller):
         self._offset = np.zeros(3)
         self._off_s0, self._off_s1 = 0.0, 1.0
         self._plan(obs)
-        if self.TRACKER == "mpc" and self._mode == "attitude":
+        self._profile(0, 0.0)  # We start from rest.
+        if self.TRACKER == "mpc":
             self._mpc, self._mpc_params = _mpc_solver(self._dt, config.sim.drone)
             self._mpc.reset()
 
@@ -222,13 +228,14 @@ class RacingLineController(Controller):
 
     def _waypoints(self, obs: dict) -> tuple[list[np.ndarray], list[int]]:
         """All waypoints of the lap; flag 1 = part of a gate passage, 2 = gate centre."""
-        points, in_gate = [], []
+        points, in_gate, gate_k = [], [], []
         for k in range(self._n_gates):
-            _, _, pre, post = self._gate_geometry(obs, k)
-            centre = obs["gates_pos"][int(obs["gate_sequence"][k])]
+            centre, _, pre, post = self._gate_geometry(obs, k)
             vias = self._via_points(obs, k)
             points += vias + [pre, centre, post]
             in_gate += [0] * len(vias) + [1, 2, 1]  # 2 marks the gate centre
+            gate_k += [-1] * len(vias) + [k, k, k]
+        self._wp_gate_k = gate_k
         return points, in_gate
 
     # ---- Racing line + speed profile ---------------------------------------------------------
@@ -238,12 +245,14 @@ class RacingLineController(Controller):
         points, in_gate = self._waypoints(obs)
         pts = np.vstack([start, *points])
         flags = np.array([0, *in_gate])
+        gate_k = np.array([-1, *self._wp_gate_k])
         # Remove (nearly) duplicate points, they break the spline.
         keep = np.r_[True, np.linalg.norm(np.diff(pts, axis=0), axis=1) > 0.02]
-        pts, flags = pts[keep], flags[keep]
+        pts, flags, gate_k = pts[keep], flags[keep], gate_k[keep]
         if len(pts) < 2:
             pts = np.vstack([pts, pts[-1] + [0.0, 0.0, 0.05]])
             flags = np.r_[flags, 0]
+            gate_k = np.r_[gate_k, -1]
         u = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(pts, axis=0), axis=1))]
         spline = CubicSpline(u, pts, bc_type="natural")
 
@@ -261,20 +270,37 @@ class RacingLineController(Controller):
         # Slow gate passages (between line-up and exit point) if requested.
         seg = np.clip(np.searchsorted(u, uu, side="right") - 1, 0, len(u) - 2)
         gate_seg = (flags[seg + 1] > 0) & (flags[seg] > 0)
-        v_lim = np.where(gate_seg, np.minimum(v_lim, self.V_GATE), v_lim)
-        v = v_lim.copy()
-        v[0] = 0.0  # We start from rest.
-        ds = np.diff(s)
-        for i in range(len(v) - 1):  # Forward pass: acceleration limit.
+        v_gate = np.array([*self.V_GATES, 10.0])[gate_k[seg + 1]]  # Per-gate limit (race order).
+        v_lim = np.where(gate_seg, np.minimum(v_lim, v_gate), v_lim)
+        gate_s = np.interp(u[flags == 2], uu, s)  # Path distance of each gate centre.
+        # Gates whose exact position we have not seen yet will probably move when we see them
+        # (only within 0.7 m). Approach them slower so there is time to react to the shift.
+        for k, sg in enumerate(gate_s):
+            if not bool(obs["gates_visited"][int(obs["gate_sequence"][k])]):
+                near = (s > sg - self.UNSEEN_DIST) & (s <= sg)
+                cap = self.V_UNSEEN[k] if np.ndim(self.V_UNSEEN) else self.V_UNSEEN
+                v_lim = np.where(near, np.minimum(v_lim, cap), v_lim)
+
+        # Fixed per-gate approach limit (stays after the gate is seen, so there is time to correct).
+        for k, sg in enumerate(gate_s[: len(self.V_APPROACH)]):
+            near = (s > sg - self.APPROACH_CAP_DIST) & (s <= sg)
+            v_lim = np.where(near, np.minimum(v_lim, self.V_APPROACH[k]), v_lim)
+
+        self._s, self._p, self._t, self._curv, self._v_lim = s, p, tangent, curv, v_lim
+        self._gate_s = gate_s
+        self._known_gates = obs["gates_pos"].copy()
+        self._known_obstacles = obs["obstacles_pos"].copy()
+
+    def _profile(self, i0: int, v0: float):
+        """Speed profile from sample i0 on, starting at speed v0 (acceleration/braking limits)."""
+        v, ds = self._v_lim.copy(), np.diff(self._s)
+        v[i0] = min(v[i0], max(v0, 0.0))
+        for i in range(i0, len(v) - 1):  # Forward pass: acceleration limit.
             v[i + 1] = min(v[i + 1], np.sqrt(v[i] ** 2 + 2 * self.A_ACC * ds[i]))
         for i in range(len(v) - 2, -1, -1):  # Backward pass: braking limit.
             v[i] = min(v[i], np.sqrt(v[i + 1] ** 2 + 2 * self.A_DEC * ds[i]))
-
-        self._s, self._p, self._t, self._curv, self._v = s, p, tangent, curv, v
-        self._gate_s = np.interp(u[flags == 2], uu, s)  # Path distance of each gate centre.
-        self._dvds = np.gradient(v, s) if len(s) > 1 else np.zeros_like(v)
-        self._known_gates = obs["gates_pos"].copy()
-        self._known_obstacles = obs["obstacles_pos"].copy()
+        self._v = v
+        self._dvds = np.gradient(v, self._s) if len(v) > 1 else np.zeros_like(v)
 
     def _ref(self, s_ref: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
         """Reference position, velocity, acceleration and speed at path distance s_ref."""
@@ -303,12 +329,14 @@ class RacingLineController(Controller):
     ) -> NDArray[np.floating]:
         """Advance the reference along the racing line and track it."""
         if self._needs_replan(obs):
-            old = self._ref(self._s_ref)[0] + self._offset
+            old_pos, _, _, old_speed = self._ref(self._s_ref)
+            old = old_pos + self._offset_at(self._s_ref)
             self._plan(obs)
             # Continue at the point of the new line that is closest to the old reference point.
             near = np.abs(self._s - self._s_ref) < 0.6
             idx = np.flatnonzero(near)[np.argmin(np.linalg.norm(self._p[near] - old, axis=1))]
             self._s_ref = float(self._s[idx])
+            self._profile(int(idx), old_speed)  # Continue at the current reference speed.
             self._offset = old - self._p[idx]
             nxt = self._gate_s[self._gate_s > self._s_ref + 0.05]
             s_gate = nxt[0] - self.OFFSET_GATE_MARGIN if len(nxt) else self._s[-1]
@@ -321,14 +349,12 @@ class RacingLineController(Controller):
         slow = 1.0 / (1.0 + self.ERR_GAIN * max(0.0, err - self.ERR_FREE))
         self._s_ref = min(self._s_ref + max(speed, self.V_MIN) * slow * self._dt, self._s[-1])
         # Command the reference at the *new* point: the drone needs one step to react.
-        if self.TRACKER == "mpc" and self._mode == "attitude":
+        if self.TRACKER == "mpc":
             return self._mpc_control(obs, slow)
         pos, vel, acc, _ = self._ref(self._s_ref)
         if self.FF_LEAD > 0:  # The drone needs time to tilt: use the acceleration from ahead.
             acc = self._ref(min(self._s_ref + speed * self.FF_LEAD, self._s[-1]))[2]
         pos = pos + self._offset_at(self._s_ref)
-        if self._mode == "state":
-            return self._state_command(obs, pos, vel * slow, acc * slow**2)
         return self._attitude_control(obs, pos, vel * slow, acc * slow**2)
 
     def _offset_at(self, s: float, offset: np.ndarray | None = None) -> np.ndarray:
@@ -351,7 +377,7 @@ class RacingLineController(Controller):
             pos, vel, acc, speed = self._ref(s)
             ref_rpy, thrust = _tilt_and_thrust(acc * slow**2, mass)
             y = np.concatenate((pos + self._offset_at(s, offset), ref_rpy, vel * slow, np.zeros(3)))
-            if j < MPC_N:
+            if j < MPC_N:  # Input reference: the planned attitude and thrust.
                 solver.set(j, "yref", np.concatenate((y, ref_rpy, [thrust])))
             else:
                 solver.set(j, "yref", y)
@@ -360,23 +386,6 @@ class RacingLineController(Controller):
         solver.solve()
         return np.asarray(solver.get(0, "u"), dtype=np.float32)
 
-    def _state_command(
-        self, obs: dict, des_pos: np.ndarray, des_vel: np.ndarray, des_acc: np.ndarray
-    ) -> NDArray[np.floating]:
-        """Full-state setpoint for the onboard controller, with an integral correction.
-
-        The onboard controller has small steady-state errors (e.g. it hovers a few cm too high),
-        so we integrate the position error and shift the commanded position by it.
-        """
-        self._i_error = np.clip(
-            self._i_error + self.STATE_KI * (des_pos - obs["pos"]) * self._dt, -0.3, 0.3
-        )
-        cmd_pos = des_pos + self._i_error
-        quat = np.array([0.0, 0.0, 0.0, 1.0])  # yaw = 0
-        return np.concatenate(
-            (cmd_pos, des_vel, self.ACC_FF * des_acc, quat, np.zeros(3)), dtype=np.float32
-        )
-
     def _attitude_control(
         self, obs: dict, des_pos: np.ndarray, des_vel: np.ndarray, des_acc: np.ndarray
     ) -> NDArray[np.floating]:
@@ -384,7 +393,8 @@ class RacingLineController(Controller):
         pos_err = des_pos - obs["pos"]
         vel_err = des_vel - obs["vel"]
         self._i_error = np.clip(self._i_error + pos_err * self._dt, -0.5, 0.5)
-        acc = self.ACC_FF * des_acc + self.KP * pos_err + self.KD * vel_err + self.KI * self._i_error
+        acc = self.ACC_FF * des_acc + self.KP * pos_err + self.KD * vel_err
+        acc = acc + self.KI * self._i_error
         force = self._mass * (acc + np.array([0.0, 0.0, 9.81]))
         horiz = np.linalg.norm(force[:2])
         max_horiz = np.tan(np.deg2rad(self.MAX_TILT_DEG)) * force[2]
