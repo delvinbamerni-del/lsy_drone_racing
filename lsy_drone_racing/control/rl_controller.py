@@ -191,6 +191,80 @@ PLAN_P0 = np.array([-1.5000, 0.7500, 0.0100])
 # --- PLAN END -----------------------------------------------------------------------------------
 
 
+# --- MPC tracker (acados, so_rpy model incl. attitude dynamics) ------------------------------
+_MPC_CACHE: dict = {}
+
+
+def _accel_to_rpy(acc: np.ndarray) -> np.ndarray:
+    """Roll/pitch with yaw exactly 0 (extrinsic xyz) that point the body z-axis along `acc`.
+
+    With R = Ry(pitch) Rx(roll): z = [cos(r) sin(p), -sin(r), cos(r) cos(p)].
+    """
+    z = acc / np.linalg.norm(acc)
+    return np.array([-np.arcsin(np.clip(z[1], -1, 1)), np.arctan2(z[0], z[2]), 0.0])
+
+
+def _build_mpc(drone: str, N: int, dt: float, weights: tuple, tilt: float):
+    """Compile (once per process and setting) an acados SQP-RTI tracking MPC."""
+    key = (drone, N, dt, weights, tilt)
+    if key in _MPC_CACHE:
+        return _MPC_CACHE[key]
+    import os
+
+    import scipy.linalg
+    from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
+    from crazyflow.dynamics import Dynamics
+    from crazyflow.dynamics.so_rpy import symbolic_dynamics_euler
+
+    p = load_params(Dynamics.so_rpy, drone)
+    X_dot, X, U, _ = symbolic_dynamics_euler(
+        mass=p["mass"], gravity_vec=p["gravity_vec"], acc_coef=p["acc_coef"],
+        cmd_f_coef=p["cmd_f_coef"], rpy_coef=p["rpy_coef"], rpy_rates_coef=p["rpy_rates_coef"],
+        cmd_rpy_coef=p["cmd_rpy_coef"],
+    )
+    import casadi as ca
+
+    # the command u is part of the state; the optimiser chooses its rate du (smooth commands)
+    dU = type(U).sym("du", U.rows())  # same symbolic type (SX or MX) as the model
+    tag = f"rl_mpc_{os.getpid()}_{len(_MPC_CACHE)}"
+    model = AcadosModel()
+    model.name = tag
+    model.x = ca.vertcat(X, U)
+    model.u = dU
+    model.f_expl_expr = ca.vertcat(X_dot, dU)
+    ocp = AcadosOcp()
+    ocp.model = model
+    nx, nu = X.rows() + U.rows(), U.rows()
+    ocp.solver_options.N_horizon = N
+    ocp.solver_options.tf = N * dt
+    ocp.cost.cost_type = ocp.cost.cost_type_e = "LINEAR_LS"
+    wp, wa, wv, wr, wu_a, wu_t, wd_a, wd_t = weights
+    Q = np.diag([wp, wp, wp, wa, wa, wa, wv, wv, wv, wr, wr, wr, wu_a, wu_a, wu_a, wu_t])
+    R = np.diag([wd_a, wd_a, wd_a, wd_t])
+    ocp.cost.W, ocp.cost.W_e = scipy.linalg.block_diag(Q, R), Q
+    ocp.cost.Vx = np.vstack([np.eye(nx), np.zeros((nu, nx))])
+    ocp.cost.Vu = np.vstack([np.zeros((nx, nu)), np.eye(nu)])
+    ocp.cost.Vx_e = np.eye(nx)
+    ocp.cost.yref, ocp.cost.yref_e = np.zeros(nx + nu), np.zeros(nx)
+    ocp.constraints.idxbx = np.array([3, 4, 12, 13, 14, 15])
+    ocp.constraints.lbx = np.array([-tilt, -tilt, -tilt, -tilt, -0.3, 4 * p["thrust_min"]])
+    ocp.constraints.ubx = np.array([tilt, tilt, tilt, tilt, 0.3, 4 * p["thrust_max"]])
+    ocp.constraints.idxbu = np.arange(4)
+    ocp.constraints.lbu = np.array([-20.0, -20.0, -5.0, -20.0])  # rad/s and N/s
+    ocp.constraints.ubu = -ocp.constraints.lbu
+    ocp.constraints.x0 = np.zeros(nx)
+    ocp.solver_options.qp_solver = "PARTIAL_CONDENSING_HPIPM"
+    ocp.solver_options.hessian_approx = "GAUSS_NEWTON"
+    ocp.solver_options.integrator_type = "ERK"
+    ocp.solver_options.nlp_solver_type = "SQP"
+    ocp.solver_options.nlp_solver_max_iter = 10
+    ocp.solver_options.qp_solver_iter_max = 30
+    ocp.code_export_directory = f"c_generated_code/{tag}"
+    solver = AcadosOcpSolver(ocp, json_file=f"c_generated_code/{tag}.json", verbose=False)
+    _MPC_CACHE[key] = (solver, nx, nu)
+    return _MPC_CACHE[key]
+
+
 def _cubic(o0: np.ndarray, v0: np.ndarray, o1: np.ndarray, v1: np.ndarray, T: float) -> np.ndarray:
     """Coefficients (4, 3) of the cubic from (o0, v0) to (o1, v1) over duration T."""
     T = max(T, 1e-3)
@@ -226,6 +300,11 @@ class MinTimeController(Controller):
     # lag predictor: feedback acts on the state predicted `predict` s ahead (current velocity and
     # current thrust direction), compared with the reference at that time
     predict = 0.0
+    # MPC tracker (acados, so_rpy model); off = the PID tracker above
+    use_mpc = False
+    mpc_N = 25  # horizon steps (x 1/50 s)
+    # pos, rpy, vel, rpy-rates, cmd rpy, cmd thrust, cmd rpy rate, cmd thrust rate
+    mpc_weights = (200.0, 2.0, 20.0, 1.0, 2.0, 200.0, 0.05, 0.5)
 
     def __init__(self, obs: dict[str, NDArray[np.floating]], info: dict, config: dict):
         """Rebuild the reference from the embedded plan and set up gate corrections."""
@@ -234,6 +313,9 @@ class MinTimeController(Controller):
             raise ValueError("MinTimeController requires control_mode = 'attitude'")
         p = load_params(config.sim.dynamics, config.sim.drone)
         self.mass = p["mass"]
+        self._drone = config.sim.drone
+        self._mpc_warm = False
+        self._last_u = np.array([0.0, 0.0, 0.0, self.mass * 9.81])
         self.a_max = 4 * p["thrust_max"] / self.mass
         self.dt = 1 / config.env.freq
         self.t = 0.0  # reference (plan) clock
@@ -350,6 +432,8 @@ class MinTimeController(Controller):
         r = self.rate
         ev = (v_ref + ov) * r - vel
         self.integral = np.clip(self.integral + e * self.dt, -0.3, 0.3)
+        if self.use_mpc:
+            return self._mpc_control(obs, t, r)
         kinematic = (a_ff + GRAVITY + oa_lead) * r**2  # plan acceleration at the current rate
         acc = kinematic - GRAVITY + self.kp * e + self.kd * ev + self.ki * self.integral
 
@@ -372,6 +456,41 @@ class MinTimeController(Controller):
         x_des = np.cross(y_des, z_des)
         rpy = Rotation.from_matrix(np.c_[x_des, y_des, z_des]).as_euler("xyz")
         return np.r_[rpy, thrust].astype(np.float32)
+
+    def _mpc_control(self, obs: dict, t: float, r: float) -> np.ndarray:
+        """Track the plan (+ gate offsets, at clock rate r) over the horizon with the MPC."""
+        from crazyflow.dynamics.utils.rotation import ang_vel2rpy_rates
+
+        solver, nx, nu = _build_mpc(self._drone, self.mpc_N, self.dt, tuple(self.mpc_weights),
+                                    float(np.deg2rad(self.max_tilt_deg)))
+        rpy = Rotation.from_quat(obs["quat"]).as_euler("xyz")
+        drpy = ang_vel2rpy_rates(obs["quat"], obs["ang_vel"])
+        x0 = np.concatenate([obs["pos"], rpy, obs["vel"], drpy, self._last_u])
+        solver.set(0, "lbx", x0)
+        solver.set(0, "ubx", x0)
+        for j in range(self.mpc_N + 1):
+            tj = t + j * self.dt * r
+            p, v, a = self._ref(tj)
+            o, ov, oa = self._offset(tj)
+            acc = (a + GRAVITY + oa) * r**2 - GRAVITY  # thrust acceleration at this rate
+            acc[2] = max(acc[2], 0.5)
+            att = _accel_to_rpy(acc)
+            u_ref = np.concatenate([att, [self.mass * np.linalg.norm(acc)]])
+            x_ref = np.concatenate([p + o, att, (v + ov) * r, np.zeros(3), u_ref])
+            if not self._mpc_warm:  # first call: start the solver from the reference itself
+                solver.set(j, "x", x0 if j == 0 else x_ref)
+            if j < self.mpc_N:
+                solver.set(j, "yref", np.concatenate([x_ref, np.zeros(4)]))
+                if not self._mpc_warm:
+                    solver.set(j, "u", np.zeros(4))
+            else:
+                solver.set(j, "yref", x_ref)
+        solver.solve()
+        self._mpc_warm = True
+        u = solver.get(1, "x")[12:16]  # the command reached after one step of the chosen rate
+        self._last_u = np.asarray(u, dtype=float)
+        self._last_thrust = float(u[3])
+        return np.asarray(u, dtype=np.float32)
 
     def step_callback(self, action, obs, reward, terminated, truncated, info) -> bool:  # noqa: D102
         self.t += self.dt * self.rate
