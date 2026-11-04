@@ -305,3 +305,8 @@ configuration went to a 4 × 20 official check.
 - The partner's tuned exit knot after gate 3 is already near a local optimum: every
   variant was equal or worse.
 - Tuning stopped at 07:46, as required by the 08:00 cutoff.
+
+**Follow-up (08:01): `force_limit` 14 in `refined_fast_controller.py`, official `evaluate.py`, 4 × 20 runs:**
+7.431 s / 65%, failed qualification (45%), 7.362 s / 60%, 7.507 s / 75%. That is 61% overall,
+so it is not a candidate: it is below 70% overall, one run is under 50%, and its mean is slower
+than 7.375 s. Not committed as a controller change.
