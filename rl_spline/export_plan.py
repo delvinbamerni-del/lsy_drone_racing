@@ -21,4 +21,11 @@ print("PLAN_A = np.array([")
 for k in range(A.shape[1]):
     print("    [" + ", ".join(f"{x:.5f}" for x in A[:, k]) + "],")
 print("])")
+if "U" in d.files:
+    print("PLAN_U = np.array([")
+    for k in range(d["U"].shape[1]):
+        print("    [" + ", ".join(f"{x:.5f}" for x in d["U"][:, k]) + "],")
+    print("])")
+else:
+    print("PLAN_U = None")
 print("PLAN_P0 = np.array([" + ", ".join(f"{x:.4f}" for x in P[:, 0]) + "])")

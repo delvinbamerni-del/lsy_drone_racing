@@ -40,13 +40,16 @@ def frame_points(spacing: float = 0.1, gates=None) -> np.ndarray:
 
 
 def solve(tilt_deg=50.0, thrust_frac=0.85, margin=0.08, pole_clear=0.25, cone_deg=45.0, n=30,
-          a_max=18.43, floor=0.05, frame_clear=0.0, init=None, jerk=0.0):
+          a_max=18.43, floor=0.05, frame_clear=0.0, init=None, jerk=0.0, lag=0.0):
     opti = ca.Opti()
     phases = len(ORDER)
     T = opti.variable(phases)
     P = [opti.variable(3, n + 1) for _ in range(phases)]
     V = [opti.variable(3, n + 1) for _ in range(phases)]
     A = [opti.variable(3, n) for _ in range(phases)]  # thrust acceleration (world frame)
+    # lag > 0: A is the drone's *actual* thrust acceleration, following the commanded U with a
+    # first-order lag (implicit Euler): A_k = (lag * A_{k-1} + dt * U_k) / (lag + dt)
+    U = [opti.variable(3, n) for _ in range(phases)] if lag > 0 else A
     opti.minimize(ca.sum1(T) + 1e-4 * sum(ca.sumsqr(ca.diff(a, 1, 1)) for a in A))
     opti.subject_to(T >= 0.1)
     cos_tilt = np.cos(np.deg2rad(tilt_deg))
@@ -60,13 +63,17 @@ def solve(tilt_deg=50.0, thrust_frac=0.85, margin=0.08, pole_clear=0.25, cone_de
         dt = T[i] / n
         for k in range(n):
             a = A[i][:, k]
+            u = U[i][:, k]
+            if lag > 0:
+                prev = A[i][:, k - 1] if k else (A[i - 1][:, -1] if i else -G)
+                opti.subject_to(a * (lag + dt) == lag * prev + dt * u)
             opti.subject_to(P[i][:, k + 1] == P[i][:, k] + V[i][:, k] * dt + 0.5 * (a + G) * dt**2)
             opti.subject_to(V[i][:, k + 1] == V[i][:, k] + (a + G) * dt)
-            opti.subject_to(ca.sumsqr(a) <= (thrust_frac * a_max) ** 2)
-            opti.subject_to(a[2] >= cos_tilt * ca.norm_2(a))  # thrust within the tilt cone
-            if jerk > 0:  # the attitude can only turn so fast: limit the change of thrust accel
-                prev_a = A[i][:, k - 1] if k else (A[i - 1][:, -1] if i else -G)
-                opti.subject_to(ca.sumsqr(a - prev_a) <= (jerk * dt) ** 2)
+            opti.subject_to(ca.sumsqr(u) <= (thrust_frac * a_max) ** 2)
+            opti.subject_to(u[2] >= cos_tilt * ca.norm_2(u))  # thrust within the tilt cone
+            if jerk > 0:  # the attitude can only turn so fast: limit the change of the command
+                prev_u = U[i][:, k - 1] if k else (U[i - 1][:, -1] if i else -G)
+                opti.subject_to(ca.sumsqr(u - prev_u) <= (jerk * dt) ** 2)
         for k in range(n + 1):
             p = P[i][:, k]
             # ground: the drone starts at z = 0.01 at rest, so allow ground level on the first
@@ -100,6 +107,8 @@ def solve(tilt_deg=50.0, thrust_frac=0.85, margin=0.08, pole_clear=0.25, cone_de
         opti.set_initial(P[i], np.linspace(prev, nxt, n + 1).T)
         opti.set_initial(V[i], np.tile((nxt - prev) / (dist / GUESS_SPEED), (n + 1, 1)).T)
         opti.set_initial(A[i], np.tile(-G, (n, 1)).T)
+        if lag > 0:
+            opti.set_initial(U[i], np.tile(-G, (n, 1)).T)
         prev = nxt
     if init is not None:  # warm start from a previous solution (T, P, V)
         t0, p0, v0 = init
@@ -108,13 +117,18 @@ def solve(tilt_deg=50.0, thrust_frac=0.85, margin=0.08, pole_clear=0.25, cone_de
             opti.set_initial(T[i], t0[i])
             opti.set_initial(P[i], p0[:, sl])
             opti.set_initial(V[i], v0[:, sl])
-            opti.set_initial(A[i], np.diff(v0[:, sl], axis=1) / (t0[i] / n) - G[:, None])
+            a0 = np.diff(v0[:, sl], axis=1) / (t0[i] / n) - G[:, None]
+            opti.set_initial(A[i], a0)
+            if lag > 0:
+                opti.set_initial(U[i], a0)
     opti.solver("ipopt", {"print_time": False}, {"print_level": 0, "max_iter": 3000})
     sol = opti.solve()
     print("status:", sol.stats()["return_status"], "iters:", sol.stats()["iter_count"])
     t = sol.value(T)
     p = np.hstack([sol.value(P[i])[:, :-1] for i in range(phases)] + [sol.value(P[-1])[:, -1:]])
     v = np.hstack([sol.value(V[i])[:, :-1] for i in range(phases)] + [sol.value(V[-1])[:, -1:]])
+    if lag > 0:
+        solve.last_U = np.hstack([sol.value(U[i]) for i in range(phases)])
     return t, p, v
 
 

@@ -220,6 +220,9 @@ class MinTimeController(Controller):
     # per passage (gates 1, 2, 3, 4, 2), learned with CMA-ES in rl_spline/tune_es.py (run brake1)
     approach_window = (0.592, 0.632, 0.459, 0.536, 0.512)
     approach_rate = (0.713, 0.768, 0.598, 0.571, 0.72)
+    # after a gate is revealed, release the brake if its shift across the opening is small:
+    # cap = approach_rate + (1 - approach_rate) * clip((release_s1 - s) / (release_s1 - release_s0))
+    release_s0, release_s1 = 0.0, 0.0  # m; s <= s0: full release, s >= s1: full brake (off: 0, 0)
     # lag predictor: feedback acts on the state predicted `predict` s ahead (current velocity and
     # current thrust direction), compared with the reference at that time
     predict = 0.0
@@ -335,6 +338,12 @@ class MinTimeController(Controller):
             g = self.sequence[self.segment]  # skip gates whose position was known well before
             fresh = not self.known[g] or self.reveal_t[g] > self.gate_t[self.segment] - window - 0.3
             if self.gate_t[self.segment] - t < window and fresh:
+                if self.known[g] and self.release_s1 > self.release_s0:
+                    normal = Rotation.from_quat(obs["gates_quat"][g]).as_matrix()[:, 0]
+                    across = self.shift[g] - (self.shift[g] @ normal) * normal
+                    s = float(np.linalg.norm(across))
+                    free = np.clip((self.release_s1 - s) / (self.release_s1 - self.release_s0), 0, 1)
+                    cap = cap + (1.0 - cap) * free
                 target = min(target, cap)
         step = self.rate_slew * self.dt
         self.rate = float(np.clip(target, self.rate - step, self.rate + step))
