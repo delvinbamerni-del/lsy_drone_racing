@@ -204,9 +204,21 @@ def _accel_to_rpy(acc: np.ndarray) -> np.ndarray:
     return np.array([-np.arcsin(np.clip(z[1], -1, 1)), np.arctan2(z[0], z[2]), 0.0])
 
 
-def _build_mpc(drone: str, N: int, dt: float, weights: tuple, tilt: float):
-    """Compile (once per process and setting) an acados SQP-RTI tracking MPC."""
-    key = (drone, N, dt, weights, tilt)
+# frame keep-out points on the gate square (half-size 0.28 m = centre line of the collision boxes)
+_EDGE = np.array([-0.28, -0.14, 0.0, 0.14])
+FRAME_LOCAL = np.r_[np.c_[_EDGE, np.full(4, 0.28)], np.c_[np.full(4, 0.28), -_EDGE],
+                    np.c_[-_EDGE, np.full(4, -0.28)], np.c_[np.full(4, -0.28), _EDGE]]  # (lat, up)
+N_FRAME = 2 * len(FRAME_LOCAL)  # the gate just passed and the next gate
+
+
+def _build_mpc(drone: str, N: int, dt: float, weights: tuple, tilt: float, n_poles: int = 4,
+               pole_r: float = 0.0, pole_penalty: float = 1e3, frame_r: float = 0.0):
+    """Compile (once per process and setting) an acados tracking MPC.
+
+    pole_r > 0 adds soft keep-out constraints around every pole (vertical line at a parameter
+    position): (x - px)^2 + (y - py)^2 >= pole_r^2.
+    """
+    key = (drone, N, dt, weights, tilt, n_poles, pole_r, pole_penalty, frame_r)
     if key in _MPC_CACHE:
         return _MPC_CACHE[key]
     import os
@@ -253,6 +265,24 @@ def _build_mpc(drone: str, N: int, dt: float, weights: tuple, tilt: float):
     ocp.constraints.lbu = np.array([-20.0, -20.0, -5.0, -20.0])  # rad/s and N/s
     ocp.constraints.ubu = -ocp.constraints.lbu
     ocp.constraints.x0 = np.zeros(nx)
+    if pole_r > 0 or frame_r > 0:  # soft keep-outs; obstacle positions are runtime parameters
+        P = type(U).sym("obstacles", 2 * n_poles + 3 * N_FRAME)
+        model.p = P
+        ocp.parameter_values = np.zeros(2 * n_poles + 3 * N_FRAME)
+        h, lo = [], []
+        if pole_r > 0:
+            h += [(X[0] - P[2 * i]) ** 2 + (X[1] - P[2 * i + 1]) ** 2 for i in range(n_poles)]
+            lo += [pole_r**2] * n_poles
+        if frame_r > 0:
+            o = 2 * n_poles
+            h += [ca.sumsqr(X[0:3] - P[o + 3 * i:o + 3 * i + 3]) for i in range(N_FRAME)]
+            lo += [frame_r**2] * N_FRAME
+        nh = len(h)
+        model.con_h_expr = ca.vertcat(*h)
+        ocp.constraints.lh, ocp.constraints.uh = np.array(lo), np.full(nh, 1e3)
+        ocp.constraints.idxsh = np.arange(nh)
+        ocp.cost.zl = ocp.cost.Zl = np.full(nh, pole_penalty)
+        ocp.cost.zu = ocp.cost.Zu = np.zeros(nh)
     ocp.solver_options.qp_solver = "PARTIAL_CONDENSING_HPIPM"
     ocp.solver_options.hessian_approx = "GAUSS_NEWTON"
     ocp.solver_options.integrator_type = "ERK"
@@ -301,10 +331,13 @@ class MinTimeController(Controller):
     # current thrust direction), compared with the reference at that time
     predict = 0.0
     # MPC tracker (acados, so_rpy model); off = the PID tracker above
-    use_mpc = False
+    use_mpc = True
     mpc_N = 25  # horizon steps (x 1/50 s)
     # pos, rpy, vel, rpy-rates, cmd rpy, cmd thrust, cmd rpy rate, cmd thrust rate
-    mpc_weights = (200.0, 2.0, 20.0, 1.0, 2.0, 200.0, 0.05, 0.5)
+    mpc_weights = (300.0, 2.0, 30.0, 1.0, 1.0, 100.0, 0.02, 0.2)
+    mpc_pole_r = 0.20  # m, soft keep-out radius around poles (0 = off)
+    mpc_pole_penalty = 1e3
+    mpc_frame_r = 0.22  # m, soft keep-out radius around gate frame points (0 = off)
 
     def __init__(self, obs: dict[str, NDArray[np.floating]], info: dict, config: dict):
         """Rebuild the reference from the embedded plan and set up gate corrections."""
@@ -461,14 +494,25 @@ class MinTimeController(Controller):
         """Track the plan (+ gate offsets, at clock rate r) over the horizon with the MPC."""
         from crazyflow.dynamics.utils.rotation import ang_vel2rpy_rates
 
+        poles = np.asarray(obs["obstacles_pos"])[:, :2]
         solver, nx, nu = _build_mpc(self._drone, self.mpc_N, self.dt, tuple(self.mpc_weights),
-                                    float(np.deg2rad(self.max_tilt_deg)))
+                                    float(np.deg2rad(self.max_tilt_deg)), len(poles),
+                                    float(self.mpc_pole_r), float(self.mpc_pole_penalty),
+                                    float(self.mpc_frame_r))
+        frames = []
+        for k in (self.segment - 1, self.segment):  # gate just passed and next gate
+            g = self.sequence[min(max(k, 0), len(self.sequence) - 1)]
+            Rg = Rotation.from_quat(obs["gates_quat"][g]).as_matrix()
+            frames.append(np.asarray(obs["gates_pos"][g]) + FRAME_LOCAL @ Rg[:, 1:3].T)
+        params = np.r_[poles.ravel(), np.concatenate(frames).ravel()]
         rpy = Rotation.from_quat(obs["quat"]).as_euler("xyz")
         drpy = ang_vel2rpy_rates(obs["quat"], obs["ang_vel"])
         x0 = np.concatenate([obs["pos"], rpy, obs["vel"], drpy, self._last_u])
         solver.set(0, "lbx", x0)
         solver.set(0, "ubx", x0)
         for j in range(self.mpc_N + 1):
+            if self.mpc_pole_r > 0 or self.mpc_frame_r > 0:
+                solver.set(j, "p", params)
             tj = t + j * self.dt * r
             p, v, a = self._ref(tj)
             o, ov, oa = self._offset(tj)
