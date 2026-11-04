@@ -182,3 +182,62 @@ deterministic 60-run screen reproduces exactly (61.7%, 7.078 s).
 
 **Official `evaluate.py` (4 × 20 random runs):** 7.111 s / 55%, 7.136 s / 50%, 7.171 s / 55%,
 and one run at 35% that failed qualification. Mean ≈ 49% at ≈ 7.14 s.
+| 56 | governor `ERR_GAIN` 6 / `ERR_FREE` 0.03 / 0.08, `OFFSET_TAU` 0.4 | 6.75–7.46 | 42–62% | reverted (same trade-off, no gain) |
+
+## 5. Summary (end of session)
+
+**Best result:** commit `8637a90` on branch `faster-laps`. The controller is
+`lsy_drone_racing/control/racing_line_controller.py`; `config/level2.toml` line 7 points to it
+and line 48 stays `attitude`.
+
+| | Lap time | Success |
+|---|---|---|
+| Baseline `gate_spline_controller.py` (official) | 11.68 s | 90% |
+| Best, harness 200 seeded runs | **7.105 s** | **54.5%** |
+| Best, official `evaluate.py` 4 × 20 runs | 7.11 / 7.14 / 7.17 s | 55 / 50 / 55 / 35% |
+| Team's current leaderboard entry | 7.375 s | 85% |
+| Leaderboard #1 (BreakFaster) | 3.268 s | 65% |
+
+**Honest assessment**
+- Lap time dropped by about 4.6 s (−39%) compared with the branch baseline, and the lap is
+  about 0.25 s faster than the team's leaderboard entry.
+- Success is only about 50–55%. In a single official 20-run evaluation, this passes the 50%
+  rule roughly 2 times out of 3 (3 of my 4 official runs passed). That is below the 70% target.
+- The leaderboard top (3.3 s) was **not** reached and is not within reach of this approach.
+  It would need about 3.7 m/s average speed on this racing line. Every speed increase I tried
+  (top speed, cornering, acceleration) cost 10–20 points of success.
+- Nothing was pushed.
+
+**Changes that helped most**
+1. Replacing the time-based spline controller with an **arc-length racing line and a
+   curvature-limited speed profile**, with a governor that slows the reference when the drone
+   falls behind (11.7 s → about 7.3 s).
+2. **Acceleration feedforward taken 0.12 s ahead** to cover the attitude lag (20% → 37.5%).
+3. **Whole-lap re-planning with a fading offset**, so the line has no hooks when gates are
+   revealed.
+4. **More damping** in the PID (KD 6/8 → 10/12; 37.5% → 57.5% on 40 runs).
+5. **acados MPC tracker** using the so_rpy model, combined with an offset that is **gone 0.3 m
+   before each gate** (first-gate crashes roughly halved).
+6. Smaller ones: speed profile continued from the current speed on re-plans, and the 3rd gate
+   crossed at 20°.
+
+**What limits it (measured)**
+- **Late gate reveal (0.7 m):** the first gate's crash rate depends almost entirely on its
+  random sideways shift (8% if under 0.07 m, 33–59% otherwise). A fixed 1.3 m/s approach cap at
+  the first gate removes most of those crashes, but costs about 0.38 s, and later gates then
+  fail more often.
+- **The 3rd → 4th gate leg:** the drone's collision box touches the 3rd gate's frame during the
+  sharp turn right behind it, because a pole sits 0.5 m behind that gate.
+- **Tracking accuracy:** about ±5 cm sideways and ±4 cm vertically against roughly ±10–13 cm of
+  real clearance (box collider 14 × 14 cm, 40 cm gate opening).
+
+**Ideas not tried (bigger changes)**
+- A different racing line topology around the 3rd and 4th gates (for example, passing the
+  pole behind the 3rd gate on its north side), or crossing gates closer to straight-on.
+- Robust planning for unseen gates: plan the approach so the worst-case 0.15 m shift is
+  feasible, for example with an MPC that has corridor constraints at the gate instead of a
+  tracking reference.
+- Your partner's `refined_controller.py` (origin/main, needs `toppra`, scored 7.375 s / 85% on
+  the leaderboard) could serve as a more reliable base. I did not install `toppra` or evaluate it.
+
+**Packages installed:** none. acados was already part of the default pixi environment.
